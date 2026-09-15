@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Escape from Маммед</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { width: 100%; height: 100vh; height: 100dvh; touch-action: none; font-family: Arial, sans-serif; overflow: hidden; background: #000; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #ui { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; }
+        #soundToggle { position: absolute; top: 16px; right: 16px; pointer-events: auto; border: 1px solid #677969; border-radius: 10px; padding: 10px; color: white; background: #17231e; font-size: 16px; }
+        #health { max-width: calc(100% - 180px); position: absolute; top: 20px; left: 20px; color: #00ff00; font-size: 24px; font-weight: bold; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); }
+        #gameOverScreen { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: white; font-size: clamp(24px, 6vw, 60px); width: min(90vw, 760px); pointer-events: auto; font-weight: bold; display: none; z-index: 100; background: rgba(0,0,0,0.9); padding: 40px; border-radius: 20px; }
+        #startScreen { position: absolute; inset: 0; z-index: 200; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,0.7); color: white; pointer-events: auto; text-align: center; }
+        #startScreen .panel { max-width: 460px; padding: 32px; border: 1px solid #526354; border-radius: 20px; background: #101b18; }
+        #startScreen h1 { font-size: clamp(26px, 6vw, 40px); margin-bottom: 16px; }
+        #startScreen p { line-height: 1.5; margin-bottom: 24px; }
+        #start { padding: 16px 28px; border: 0; border-radius: 12px; background: #94e287; color: #10200e; font-size: 22px; font-weight: bold; cursor: pointer; }
+        #start:disabled { opacity: 0.5; cursor: wait; }
+        #start:focus-visible { outline: 3px solid white; outline-offset: 4px; }
+        #joystick-container { position: absolute; bottom: 30px; left: 30px; width: 120px; height: 120px; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; pointer-events: auto; }
+        #joystick-stick { position: absolute; width: 50px; height: 50px; background: rgba(255,255,255,0.5); border-radius: 50%; top: 35px; left: 35px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div id="startScreen">
+            <div class="panel">
+                <h1>Escape from Маммед</h1>
+                <p id="startDescription">Найди домик в туманном лесу и доберись до его двери. Не дай Маммеду себя поймать!</p>
+                <button id="start" type="button" disabled>Начать игру</button>
+            </div>
+        </div>
+        <button id="soundToggle" type="button" aria-pressed="true">Звук: вкл.</button>
+        <div id="health">Цель: доберись до двери домика</div>
+        <div id="gameOverScreen" role="status"><div id="result"></div><button id="restart" style="margin-top:24px;padding:12px 24px;font-size:20px;cursor:pointer">Играть снова</button></div>
+        <div style="position:absolute;right:16px;bottom:16px;color:white;max-width:45%;text-align:right">WASD / стрелки — идти. Потяни экран справа или мышью — осмотреться.</div>
+        <div id="joystick-container">
+            <div id="joystick-stick"></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        if (!window.THREE) {
+            document.getElementById('health').textContent = 'Не удалось загрузить Three.js. Проверьте интернет и обновите страницу.';
+            document.getElementById('startDescription').textContent = document.getElementById('health').textContent;
+            throw new Error('Three.js unavailable');
+        }
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0a15);
+        scene.fog = new THREE.Fog(0x0a0a15, 30, 85);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1.7, 0);
+
+        let renderer;
+        try { renderer = new THREE.WebGLRenderer({ antialias: true }); }
+        catch (error) {
+            document.getElementById('health').textContent = 'Браузер не смог запустить WebGL. Попробуйте другой браузер или включите аппаратное ускорение.';
+            document.getElementById('startDescription').textContent = document.getElementById('health').textContent;
+            throw error;
+        }
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        camera.rotation.order = 'YXZ';
+        camera.rotation.y = Math.PI;
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        const ambientLight = new THREE.AmbientLight(0x4a4a6a, 0.8);
+        scene.add(ambientLight);
+
+        const moonLight = new THREE.DirectionalLight(0xb8b8ff, 1.0);
+        moonLight.position.set(50, 80, 50);
+        moonLight.castShadow = true;
+        moonLight.shadow.mapSize.width = 2048;
+        moonLight.shadow.mapSize.height = 2048;
+        scene.add(moonLight);
+
+        const groundGeometry = new THREE.PlaneGeometry(240, 360);
+        const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x1a2a1a, roughness: 0.8 });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        ground.position.z = -50;
+        scene.add(ground);
+
+        // Общие ресурсы для всего леса уменьшают расход памяти.
+        const trunkGeometry = new THREE.CylinderGeometry(0.5, 0.7, 8, 8);
+        const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x3d2817 });
+        const foliageGeometry = new THREE.SphereGeometry(4, 8, 8);
+        const foliageMaterial = new THREE.MeshStandardMaterial({ color: 0x1a4d1a });
+        const forest = [];
+        function createTree(x, z) {
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.set(x, 4, z);
+            trunk.castShadow = true;
+            scene.add(trunk);
+
+            const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+            foliage.position.set(x, 8, z);
+            foliage.castShadow = true;
+            scene.add(foliage);
+            forest.push({ trunk, foliage });
+        }
+
+        // Плотный лес, с проходом к двери и свободной стартовой площадкой.
+        for (let z = -218; z <= 118; z += 12) {
+            for (let x = -110; x <= 110; x += 12) {
+                const treeX = x + (Math.random() - 0.5) * 5;
+                const treeZ = z + (Math.random() - 0.5) * 5;
+                if (Math.hypot(treeX, treeZ) < 12) continue;
+                if (Math.abs(treeX) < 7 && treeZ < 12) continue;
+                if (Math.abs(treeX) < 12 && Math.abs(treeZ + 150) < 13) continue;
+                createTree(treeX, treeZ);
+            }
+        }
+
+        // ===== ДОМИК =====
+        const houseGeometry = new THREE.BoxGeometry(6, 5, 6);
+        const houseMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const house = new THREE.Mesh(houseGeometry, houseMaterial);
+        house.position.set(0, 2.5, -150);
+        house.castShadow = true;
+        scene.add(house);
+
+        const roofGeometry = new THREE.ConeGeometry(5, 3, 4);
+        const roofMaterial = new THREE.MeshStandardMaterial({ color: 0xFF0000 });
+        const roof = new THREE.Mesh(roofGeometry, roofMaterial);
+        roof.position.set(0, 6.5, -150);
+        roof.rotation.y = Math.PI / 4;
+        roof.castShadow = true;
+        scene.add(roof);
+
+        const doorGeometry = new THREE.BoxGeometry(2, 3, 0.2);
+        const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x654321 });
+        const door = new THREE.Mesh(doorGeometry, doorMaterial);
+        door.position.set(0, 1.5, -146.9);
+        scene.add(door);
+
+        // ===== МАММЕД СО СПРАЙТОМ =====
+        const textureLoader = new THREE.TextureLoader();
+        // Видимый противник даже при недоступной внешней картинке.
+        const fallback = document.createElement('canvas');
+        fallback.width = 128; fallback.height = 192;
+        const ctx = fallback.getContext('2d');
+        ctx.fillStyle = '#831c2b'; ctx.fillRect(20, 70, 88, 122);
+        ctx.fillStyle = '#ebbe9a'; ctx.beginPath(); ctx.arc(64, 43, 34, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#111'; ctx.fillRect(43, 34, 10, 10); ctx.fillRect(75, 34, 10, 10); ctx.fillRect(47, 59, 34, 5);
+        const texture = new THREE.CanvasTexture(fallback);
+
+        const enemyGeometry = new THREE.PlaneGeometry(3, 4);
+        const enemyMaterial = new THREE.MeshBasicMaterial({ 
+            map: texture,
+            transparent: true,
+            side: THREE.DoubleSide
+        });
+        const enemy = new THREE.Mesh(enemyGeometry, enemyMaterial);
+        enemy.position.set(door.position.x, 2, door.position.z + 0.9);
+        scene.add(enemy);
+
+        textureLoader.load('https://i.imgur.com/rE3lQxC.jpg', loaded => {
+            enemyMaterial.map = loaded;
+            enemyMaterial.needsUpdate = true;
+            texture.dispose();
+        }, undefined, () => { /* Остаётся встроенная картинка. */ });
+
+        const playerPos = new THREE.Vector3(0, 1.7, 0);
+        const playerSpeed = 20;
+
+        let gameOver = false;
+        let gameStarted = false;
+        let audioContext = null, masterGain = null, forestGain = null;
+        let soundEnabled = true, stepTime = 0;
+        function startAudio() {
+            const AudioCtor = window.AudioContext || window.webkitAudioContext;
+            if (!AudioCtor) return;
+            try {
+                if (!audioContext) {
+                    audioContext = new AudioCtor();
+                    masterGain = audioContext.createGain();
+                    masterGain.gain.value = soundEnabled ? 0.35 : 0;
+                    masterGain.connect(audioContext.destination);
+                    const noise = audioContext.createBuffer(1, audioContext.sampleRate * 3, audioContext.sampleRate);
+                    const samples = noise.getChannelData(0);
+                    for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+                    const wind = audioContext.createBufferSource();
+                    wind.buffer = noise; wind.loop = true;
+                    const filter = audioContext.createBiquadFilter();
+                    filter.type = 'lowpass'; filter.frequency.value = 650;
+                    forestGain = audioContext.createGain(); forestGain.gain.value = 0;
+                    wind.connect(filter); filter.connect(forestGain); forestGain.connect(masterGain);
+                    wind.start();
+                }
+                audioContext.resume().catch(() => {});
+                forestGain.gain.setTargetAtTime(gameStarted && !gameOver ? 0.16 : 0, audioContext.currentTime, 0.2);
+            } catch (_) { /* Игра остаётся доступной, если браузер не поддерживает звук. */ }
+        }
+        function tone(frequency, duration, delay = 0, type = 'sine', volume = 0.2) {
+            if (!audioContext || !masterGain || !soundEnabled || audioContext.state !== 'running') return;
+            const time = audioContext.currentTime + delay;
+            const oscillator = audioContext.createOscillator();
+            const gain = audioContext.createGain();
+            oscillator.type = type; oscillator.frequency.setValueAtTime(frequency, time);
+            gain.gain.setValueAtTime(0, time);
+            gain.gain.linearRampToValueAtTime(volume, time + 0.015);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
+            oscillator.connect(gain); gain.connect(masterGain);
+            oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
+            oscillator.start(time); oscillator.stop(time + duration + 0.02);
+        }
+        function finishAudio(won) {
+            if (forestGain) forestGain.gain.setTargetAtTime(0, audioContext.currentTime, 0.15);
+            if (won) { tone(523, 0.3); tone(659, 0.3, 0.15); tone(784, 0.5, 0.3); }
+            else { tone(160, 0.3, 0, 'triangle'); tone(95, 0.6, 0.2, 'triangle'); }
+        }
+        document.getElementById('soundToggle').addEventListener('click', () => {
+            soundEnabled = !soundEnabled;
+            const button = document.getElementById('soundToggle');
+            button.textContent = soundEnabled ? 'Звук: вкл.' : 'Звук: выкл.';
+            button.setAttribute('aria-pressed', String(soundEnabled));
+            if (gameStarted) startAudio();
+            if (masterGain) masterGain.gain.setTargetAtTime(soundEnabled ? 0.35 : 0, audioContext.currentTime, 0.03);
+        });
+        function suspendAudio() { if (audioContext) audioContext.suspend().catch(() => {}); }
+        window.addEventListener('blur', suspendAudio);
+        window.addEventListener('focus', () => { if (gameStarted && !document.hidden) startAudio(); });
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) suspendAudio(); else if (gameStarted) startAudio();
+        });
+        const joystickContainer = document.getElementById('joystick-container');
+        const joystickStick = document.getElementById('joystick-stick');
+        const keys = new Set();
+        let joystickPointer = null, lookPointer = null;
+        let joystickX = 0, joystickY = 0, lookX = 0, lookY = 0;
+        function resetJoystick() {
+            joystickPointer = null;
+            joystickX = joystickY = 0;
+            joystickStick.style.transform = '';
+        }
+        function clearInput() { resetJoystick(); lookPointer = null; keys.clear(); }
+        function updateJoystick(e) {
+            const rect = joystickContainer.getBoundingClientRect();
+            const limit = Math.max(1, (joystickContainer.clientWidth - joystickStick.offsetWidth) / 2);
+            let x = e.clientX - rect.left - rect.width / 2;
+            let y = e.clientY - rect.top - rect.height / 2;
+            const length = Math.hypot(x, y);
+            if (length > limit) { x *= limit / length; y *= limit / length; }
+            joystickX = x / limit; joystickY = y / limit;
+            joystickStick.style.transform = `translate(${x}px, ${y}px)`;
+        }
+        joystickContainer.addEventListener('pointerdown', e => {
+            if (!gameStarted || gameOver || joystickPointer !== null || e.button !== 0) return;
+            e.preventDefault();
+            joystickPointer = e.pointerId;
+            joystickContainer.setPointerCapture(e.pointerId);
+            updateJoystick(e);
+        });
+        joystickContainer.addEventListener('pointermove', e => {
+            if (e.pointerId === joystickPointer) updateJoystick(e);
+        });
+        for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+            joystickContainer.addEventListener(event, e => {
+                if (e.pointerId === joystickPointer) resetJoystick();
+            });
+        }
+        const canvas = renderer.domElement;
+        canvas.addEventListener('pointerdown', e => {
+            if (!gameStarted || gameOver || lookPointer !== null || e.button !== 0 ||
+                (e.pointerType !== 'mouse' && e.clientX < window.innerWidth / 2)) return;
+            lookPointer = e.pointerId; lookX = e.clientX; lookY = e.clientY;
+            canvas.setPointerCapture(e.pointerId);
+        });
+        canvas.addEventListener('pointermove', e => {
+            if (!gameStarted || gameOver || e.pointerId !== lookPointer) return;
+            camera.rotation.y -= (e.clientX - lookX) * 0.005;
+            camera.rotation.x = Math.max(-Math.PI / 2 + 0.01,
+                Math.min(Math.PI / 2 - 0.01, camera.rotation.x - (e.clientY - lookY) * 0.005));
+            lookX = e.clientX; lookY = e.clientY;
+        });
+        for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+            canvas.addEventListener(event, e => { if (e.pointerId === lookPointer) lookPointer = null; });
+        }
+        const movementKeys = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight'];
+        window.addEventListener('keydown', e => {
+            if (movementKeys.includes(e.code)) { e.preventDefault(); if (gameStarted && !gameOver) keys.add(e.code); }
+        });
+        window.addEventListener('keyup', e => keys.delete(e.code));
+        window.addEventListener('blur', () => { clearInput(); lastTime = null; });
+        document.addEventListener('visibilitychange', () => { clearInput(); lastTime = null; });
+
+        function finish(message, won = false) {
+            gameOver = true; clearInput(); finishAudio(won);
+            document.getElementById('result').textContent = message;
+            document.getElementById('gameOverScreen').style.display = 'block';
+            document.getElementById('restart').focus();
+        }
+        function startGame() {
+            playerPos.set(0, 1.7, 0); camera.position.copy(playerPos); camera.rotation.set(0, Math.PI, 0);
+            enemy.position.set(door.position.x, 2, door.position.z + 0.9);
+            clearInput(); gameOver = false; gameStarted = true; lastTime = null;
+            document.getElementById('startScreen').style.display = 'none';
+            document.getElementById('gameOverScreen').style.display = 'none';
+            updateHouseVisibility();
+            stepTime = 0; startAudio();
+        }
+        document.getElementById('restart').addEventListener('click', startGame);
+        document.getElementById('start').addEventListener('click', startGame);
+        const move = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        function updateGame(dt) {
+            if (!gameStarted || gameOver) return;
+            let x = (Math.abs(joystickX) > 0.1 ? joystickX : 0)
+                + Number(keys.has('KeyD') || keys.has('ArrowRight')) - Number(keys.has('KeyA') || keys.has('ArrowLeft'));
+            let forward = (Math.abs(joystickY) > 0.1 ? -joystickY : 0)
+                + Number(keys.has('KeyW') || keys.has('ArrowUp')) - Number(keys.has('KeyS') || keys.has('ArrowDown'));
+            const length = Math.hypot(x, forward);
+            if (length > 1) { x /= length; forward /= length; }
+            const yaw = camera.rotation.y;
+            move.set(x * Math.cos(yaw) - forward * Math.sin(yaw), 0,
+                -x * Math.sin(yaw) - forward * Math.cos(yaw));
+            if (length > 0) {
+                stepTime += dt * Math.min(length, 1);
+                if (stepTime >= 0.32) { tone(85 + Math.random() * 25, 0.09, 0, 'triangle', 0.24); stepTime %= 0.32; }
+            } else stepTime = 0;
+            playerPos.addScaledVector(move, playerSpeed * dt);
+            playerPos.x = Math.max(-119, Math.min(119, playerPos.x));
+            playerPos.z = Math.max(-229, Math.min(129, playerPos.z));
+            camera.position.copy(playerPos);
+
+            // Маммед выходит от двери и преследует игрока с самого начала.
+            const target = playerPos, speed = 10;
+            direction.set(target.x - enemy.position.x, 0, target.z - enemy.position.z);
+            const remaining = direction.length();
+            if (remaining > 0) enemy.position.addScaledVector(direction.normalize(), Math.min(speed * dt, remaining));
+            enemy.lookAt(playerPos.x, enemy.position.y, playerPos.z);
+            if (Math.hypot(playerPos.x - enemy.position.x, playerPos.z - enemy.position.z) < 2) {
+                finish('😱 МАММЕД ПОЙМАЛ!');
+                return;
+            }
+            if (Math.abs(playerPos.x - door.position.x) < 1.5 && Math.abs(playerPos.z - door.position.z) < 2) {
+                finish('✅ ТЫ ДОШЁЛ ДО ДОМИКА!', true);
+            }
+        }
+        function updateHouseVisibility() {
+            const visible = Math.hypot(playerPos.x - house.position.x, playerPos.z - house.position.z) < 85;
+            house.visible = roof.visible = door.visible = visible;
+        }
+        updateHouseVisibility();
+        document.getElementById('start').disabled = false;
+        let lastTime = null;
+        function animate(time) {
+            requestAnimationFrame(animate);
+            const dt = lastTime === null ? 0 : Math.min(Math.max((time - lastTime) / 1000, 0), 0.05);
+            lastTime = time;
+            if (!document.hidden) updateGame(dt);
+            updateHouseVisibility();
+            for (const tree of forest) {
+                const visible = Math.hypot(playerPos.x - tree.trunk.position.x, playerPos.z - tree.trunk.position.z) < 100;
+                tree.trunk.visible = tree.foliage.visible = visible;
+            }
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
